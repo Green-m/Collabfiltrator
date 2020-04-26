@@ -10,6 +10,11 @@ Exfiltrate blind remote code execution output over DNS via Burp Collaborator.
 - Burp Suite Professional 1.7.x or Later
 - <a href="https://www.jython.org/download.html">Jython 2.7.1</a>
 
+**jython install dnslib**
+```
+java -jar jython.jar -m pip install dnslib
+```
+
 #### Support:
 [Installation in Burp Suite Professional](https://github.com/0xC01DF00D/Collabfiltrator/wiki/Installation-in-Burp-Suite-Professional)
 
