@@ -13,14 +13,14 @@ from java.awt import Dimension, FlowLayout, Color, Toolkit
 from java.awt.datatransfer import Clipboard, StringSelection
 from javax import swing
 from thread import start_new_thread
-import sys, time, threading, base64, logging, dnslib, binascii, re
+import sys, time, threading, base64, logging, dnslib, binascii, re, tempfile
 try:
     from exceptions_fix import FixBurpExceptions
 except ImportError:
     pass
     
 
-logging.basicConfig(filename='/tmp/burpCollabfiltrator.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:  %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(filename= tempfile.gettempdir() + '/burpCollabfiltrator.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:  %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExtenderCallbacks):
     # Extention information
@@ -104,6 +104,7 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         self.t1r4.add(swing.JButton("Copy Payload to Clipboard", actionPerformed=self.copyToClipboard))
         self.t1r4.add(swing.JButton("Start poll results", actionPerformed=self.startPollResults))
         self.t1r4.add(swing.JButton("Stop listener", actionPerformed=self.stopPollResults))
+        self.t1r4.add(swing.JButton("Show logs", actionPerformed=self.showLogs))
         self.t1r5.add(swing.JLabel("Output"))
         self.t1r5.add(self.outputScroll) #add output scroll bar to page
         self.t1r7.add(self.progressBar)
@@ -201,12 +202,19 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
     def stopPollResults(self, event):
         self.pollstop = True
 
-#    def showLogs(self. event):
-#        logfile = "/tmp/burpCollabfiltrator.log"
+    def showLogs(self, event):
+        logfile = tempfile.gettempdir() + '/burpCollabfiltrator.log'
+        content = "Logfile location: {} \n".format(logfile)
+        content += "(last 20 lines): \n"
+        with open(logfile) as f:
+            content += "".join(f.readlines()[-20:]) ## default 20 lines
+
+        self.outputTxt.append(content + "\n")
         
 
     #monitor collab domain for output response
     def checkCollabDomainStatus(self, domain, objCollab):
+        self.outputTxt.setText("") ## clear the output
         DNSrecordDict = dict()#since data comes in out of order we have to line up each request with it's timestamp
         #recordType = "A" #01
         complete = False
